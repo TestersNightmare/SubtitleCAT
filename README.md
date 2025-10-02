@@ -6,7 +6,7 @@
 An SRT subtitle translation tool based on Google Gemini. Extract subtitles from videos, translate them using AI, and generate bilingual ASS files—all in a user-friendly GUI built with Tkinter.
 
 <div style="display: flex; justify-content: center;">
-  <img alt="Desktop Launcher Icon" src="2025-10-02_210131.jpg" width="768">
+  <img alt="Desktop Launcher Icon" src="2025-10-02_210131.jpg" width="900">
 </div>
 
 ## ✨ Features
