@@ -1,7 +1,4 @@
 # SubtitleCAT
-An SRT subtitle translation tool based on Google Gemini
-
-# SubtitleCAT
 
 [![GitHub Releases](https://img.shields.io/github/v/release/TestersNightmare/SubtitleCAT)](https://github.com/TestersNightmare/SubtitleCAT/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -9,7 +6,7 @@ An SRT subtitle translation tool based on Google Gemini
 An SRT subtitle translation tool based on Google Gemini. Extract subtitles from videos, translate them using AI, and generate bilingual ASS files—all in a user-friendly GUI built with Tkinter.
 
 <div style="display: flex; justify-content: center;">
-  <img alt="Desktop Launcher Icon" src="2025-10-02_210131.jpg" width="600">
+  <img alt="Desktop Launcher Icon" src="2025-10-02_210131.jpg" width="768">
 </div>
 
 ## ✨ Features
