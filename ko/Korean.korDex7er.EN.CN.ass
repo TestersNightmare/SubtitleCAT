@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+import os
+import sys
+import re
+import time
+import json
+import pysrt
+
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from google import genai  # 确保已安装 google-genai
+
+# ---------------- 配置 ----------------
+MODEL = "gemini-2.5-flash"
+BATCH_SIZE = 100
+RETRY = 3
+SLEEP_ON_RETRY = 2
+MAX_WORKERS = 2
+# --------------------------------------
+
+# 线程局部存储，每个线程独立维护 client
+thread_local = threading.local()
+
+# ---------- 读取 API_KEYS ----------
+keys_file = os.path.join(os.path.dirname(__file__), "api_keys.json")
+if os.path.exists(keys_file):
+    with open(keys_file, "r", encoding="utf-8") as f:
+        API_KEYS = json.load(f)
+else:
+    raise Exception("未找到 api_keys.json 文件")
+if not API_KEYS:
+    raise Exception("api_keys.json 中没有有效 API Key")
+
+def init_thread_local():
+    thread_local.current_api_index = 0
+
+def get_client():
+    if not hasattr(thread_local, "client"):
+        thread_local.client = genai.Client(api_key=API_KEYS[thread_local.current_api_index])
+    return thread_local.client
+
+# ---------- ASS 头 ----------
+ASS_HEADER = """[Script Info]
+; This is an Advanced Sub Station Alpha v4+ script.
+Title: chenssilk@gmail.com
+ScriptType: v4.00+
+PlayDepth: 0
+ScaledBorderAndShadow: Yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,微软雅黑,16,&H00FFFFFF,&H0000FFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,1
+Style: Eng,微软雅黑,22,&H00FFFFFF,&H0000FFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,2,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+
+# ---------- 工具函数 ----------
+def srt_time_to_ass(srt_time):
+    return f"{srt_time.hours}:{srt_time.minutes:02}:{srt_time.seconds:02}.{int(srt_time.milliseconds/10):02}"
+
+def parse_existing_ass(ass_file):
+    if not os.path.exists(ass_file):
+        return 0
+    with open(ass_file, "r", encoding="utf-8") as f:
+        return sum(1 for line in f if line.startswith("Dialogue:"))
+
+def safe_call_generate(prompt, log=None):
+    attempts = 0
+    last_e = None
+    if log is None:
+        log = print
+    while attempts < RETRY:
+        try:
+            resp = get_client().models.generate_content(model=MODEL, contents=prompt)
+            return resp.text
+        except Exception as e:
+            last_e = e
+            attempts += 1
+            log(f"⚠️ API 请求失败 (尝试 {attempts}/{RETRY})，错误: {e}")
+            time.sleep(SLEEP_ON_RETRY)
+
+        if attempts == RETRY:
+            # 切换 API key
+            thread_local.current_api_index += 1
+            if thread_local.current_api_index >= len(API_KEYS):
+                raise Exception("所有 API key 已用尽") from last_e
+            log(f"线程 {threading.current_thread().name} 切换 API key: {API_KEYS[thread_local.current_api_index]}")
+            thread_local.client = genai.Client(api_key=API_KEYS[thread_local.current_api_index])
+            attempts = 0
+
+def parse_indexed_response(resp_text):
+    mapping = {}
+    for raw_line in resp_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if "|||" in line:
+            parts = line.split("|||", 1)
+            idx_part, trans = parts[0].strip(), parts[1].strip()
+        else:
+            m = re.match(r'^\s*(\d+)[\.\)\:,-]?\s+(.*)$', line)
+            if m:
+                idx_part, trans = m.group(1), m.group(2).strip()
+            else:
+                continue
+        mnum = re.search(r'(\d+)', idx_part)
+        if not mnum:
+            continue
+        idx = int(mnum.group(1))
+        mapping[idx] = trans
+    return mapping
+
+# ---------- 翻译逻辑 ----------
+def translate_batch_with_index(texts, batch_start_index, target_lang="Chinese", log=None):
+    if log is None:
+        log = print
+    numbered_inputs = [f"{batch_start_index+i}|||{t}" for i, t in enumerate(texts)]
+    prompt = (
+        f"You are a professional translator. Translate the following subtitle lines into {target_lang}.\n"
+        "I have prefixed each input line with an index and the separator '|||'.\n"
+        "REPLY WITH EXACTLY ONE LINE PER INPUT and DO NOT ADD ANY OTHER TEXT.\n"
+        "Each output line MUST be formatted as: index|||translation\n"
+        "When translating the input text, use symbols as sentence separators whenever possible, and ensure the translated result matches the input text's line count.\n"
+        "Do not change the indexes. Do not reorder. If you cannot translate a line, return index||| (empty translation).\n"
+        "IMPORTANT: Ensure that the translation of names, places, and technical terms is CONSISTENT throughout the entire subtitle file.\n"
+        "If the same word appears multiple times (e.g., 'Jack', 'New York'), always translate it in the same way as before.\n\n"
+        + "\n".join(numbered_inputs)
+    )
+    resp_text = safe_call_generate(prompt, log=log)
+    mapping = parse_indexed_response(resp_text)
+    results = []
+    for i in range(len(texts)):
+        idx = batch_start_index + i
+        trans = mapping.get(idx)
+        results.append(trans.replace("\n"," ").strip() if trans else None)
+    return results
+
+def translate_line_single(text, log=None):
+    if log is None:
+        log = print
+    prompt = f"Translate the following subtitle line into Chinese (single line):\n\n{text}\n\nReply only with the translation."
+    resp = safe_call_generate(prompt, log=log)
+    return resp.strip().replace("\n"," ")
+
+def convert_srt_to_ass(srt_file, target_lang_code, log=None):
+    if log is None:
+        log = print
+    lang_map = {"zh": "Chinese", "en": "English", "ko": "Korean", "ja": "Japanese"}
+    target_lang = lang_map.get(target_lang_code, "Chinese")
+    log(f"线程 {threading.current_thread().name} 开始处理文件: {srt_file} -> 目标语言: {target_lang}")
+
+    subs = pysrt.open(srt_file, encoding="utf-8")
+    total = len(subs)
+    ass_file = os.path.splitext(srt_file)[0] + ".ass"
+    done_count = parse_existing_ass(ass_file)
+
+    if done_count == 0:
+        with open(ass_file, "w", encoding="utf-8") as f:
+            f.write(ASS_HEADER)
+
+    for start in range(done_count, total, BATCH_SIZE):
+        batch_subs = subs[start:start + BATCH_SIZE]
+        texts = [s.text.strip().replace("\n"," ") for s in batch_subs]
+        translations = translate_batch_with_index(texts, start, target_lang=target_lang, log=log)
+        for j, trans in enumerate(translations):
+            if not trans:
+                translations[j] = translate_line_single(texts[j], log=log)
+        with open(ass_file, "a", encoding="utf-8") as f:
+            for sub, trans in zip(batch_subs, translations):
+                start_time = srt_time_to_ass(sub.start)
+                end_time = srt_time_to_ass(sub.end)
+                orig = sub.text.strip().replace("\n"," ")
+                line = f"Dialogue: 0,{start_time},{end_time},Default,,0,0,0,,{orig}\\N{trans}"
+                f.write(line + "\n")
+        log(f"线程 {threading.current_thread().name} - 已写入批 {start//BATCH_SIZE + 1} 到 {ass_file}")
+
+    log(f"线程 {threading.current_thread().name} - 完成文件: {os.path.basename(srt_file)}")
+
+# ---------- GUI 调用接口 ----------
+def translate_files(srt_files, target_lang_code):
+    if not srt_files:
+        log("没有传入 SRT 文件")
+        return
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS, initializer=init_thread_local) as executor:
+        futures = []
+        for srt_file in srt_files:
+            futures.append(executor.submit(convert_srt_to_ass, srt_file, target_lang_code))
+        for f in futures:
+            f.result()  # 等待完成
+    log("所有文件翻译完成")
