@@ -11,7 +11,7 @@ from PIL import Image, ImageTk
 class SubtitleExtractorUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("SubtitleCat 字幕猫")
+        self.root.title("SubtitleCat 字幕猫 v1.0.1")
         self.is_translating = False
         self.stop_translation = False
         self.is_extracting = False

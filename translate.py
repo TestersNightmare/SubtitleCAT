@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from google import genai
 
 MODEL = "gemini-2.5-flash"
-BATCH_SIZE = 200
+BATCH_SIZE = 20
 RETRY = 3
 SLEEP_ON_RETRY = 2
 MAX_WORKERS = 2
@@ -163,17 +163,34 @@ def translate_batch_with_index(texts, batch_start_index, target_lang="Chinese", 
     if log is None:
         log = print
     numbered_inputs = [f"{batch_start_index+i}|||{t}" for i, t in enumerate(texts)]
+
     prompt = (
         f"You are a professional translator. Translate the following subtitle lines into {target_lang}.\n"
-        "I have prefixed each input line with an index and the separator '|||'.\n"
-        "REPLY WITH EXACTLY ONE LINE PER INPUT and DO NOT ADD ANY OTHER TEXT.\n"
-        "Each output line MUST be formatted as: index|||translation\n"
-        "When translating the input text, use symbols as sentence separators whenever possible, and ensure the translated result matches the input text's line count.\n"
-        "Do not change the indexes. Do not reorder. If you cannot translate a line, return index||| (empty translation).\n"
-        "IMPORTANT: Ensure that the translation of names, places, and technical terms is CONSISTENT throughout the entire subtitle file.\n"
-        "If the same word appears multiple times (e.g., 'Jack', 'New York'), always translate it in the same way as before.\n\n"
+        "Each input is prefixed with an index and '|||'. Long sentences may be split across multiple consecutive lines for subtitle timing.\n"
+        "REPLY WITH EXACTLY ONE BLOCK PER INPUT (N inputs = N output blocks), NO EXTRA TEXT OR LINES.\n"
+        "Format: index|||translated_line1\\ntranslated_line2\\n... (exactly matching the input's line count per block).\n"
+        "CRITICAL RULES:\n"
+        "- Allow splitting the translation to adapt to the exact number of input lines (e.g., 4 input lines = 4 translated lines).\n"
+        "- Use natural sentence breaks, punctuation, or pauses to split, keeping each line's length and rhythm similar to the input.\n"
+        "- DO NOT advance, delay, or move any translation forward/backward: maintain strict 1:1 correspondence—line 1 translates line 1, line 2 translates line 2, etc.\n"
+        "- Do not merge, add, or reorder lines; the full sentence must be distributed sequentially across the exact same number of lines.\n"
+        "Do not change indexes. If untranslatable, return index||| (empty for single line) or index|||\\n\\n... (matching line count).\n"
+        "Example:\n"
+        "Input:\n"
+        "1|||This is a very long sentence that \n"
+        "2|||needs to be split for\n"
+        "3|||timing and It continues\n"
+        "4|||here with more details.\n"
+        "Output:\n"
+        "1|||这是一个很长的句子\n"
+        "2|||需要为了时间\n"
+        "3|||而拆分 在这里继续\n"
+        "4|||带有更多细节。\n"
+        "(Note: Exactly 4 lines, split to match input structure; no advancing/delaying—each line corresponds sequentially without reordering.)\n"
+        "IMPORTANT: Consistent translation for names/places (e.g., 'Jack' always '杰克').\n\n"
         + "\n".join(numbered_inputs)
     )
+
     resp_text = safe_call_generate(prompt, log=log, stop_flag=stop_flag)
     mapping = parse_indexed_response(resp_text)
     results = []
@@ -215,7 +232,14 @@ def convert_srt_to_ass(srt_file, target_lang_code, log=None, stop_flag=None):
     
     # 格式化处理
     for sub in subs:
+        # 删除听障文本 
         sub.text = re.sub(r'\[.*?\]', '', sub.text)
+        # 删除:前听障文本（人名/机构名字符串）
+        sub.text = re.sub(r'^[A-Za-z][A-Za-z\s]*:', '', sub.text)
+                
+        # 删除<font <i>文本
+        sub.text = re.sub(r'<font[^>]*>', '', sub.text).replace('</font>', '')
+        sub.text = re.sub(r'<i>(?:(?![a-zA-Z0-9]).)*?</i>', '', sub.text)
         
         # 删除换行符，将多行文本转换为单行（替换为单个空格）
         sub.text = re.sub(r'\n', ' ', sub.text)
@@ -223,8 +247,9 @@ def convert_srt_to_ass(srt_file, target_lang_code, log=None, stop_flag=None):
         # 处理破折号：将 "--" 转换为 "..."
         sub.text = re.sub(r'--', '...', sub.text)
         
-        # 确保 "-" 后有且仅有一个空格：将 "- " 后跟多个空格替换为 "- "（单个空格）
-        sub.text = re.sub(r'-\s+', '- ', sub.text)
+        # 确保 "-" 后有且仅有一个空格：
+        sub.text = re.sub(r'-\s+', '- ', sub.text)        
+        sub.text = re.sub(r' -\s+', ' - ', sub.text)
         
         # 将所有双空格（或多空格）换成单空格
         sub.text = re.sub(r'\s+', ' ', sub.text)
@@ -261,7 +286,7 @@ def convert_srt_to_ass(srt_file, target_lang_code, log=None, stop_flag=None):
                 start_time = srt_time_to_ass(sub.start)
                 end_time = srt_time_to_ass(sub.end)
                 orig = sub.text.strip().replace("\n"," ")
-                line = f"Dialogue: 0,{start_time},{end_time},Default,,0,0,0,,{orig}\\N{rEng}{trans}"
+                line = f"Dialogue: 0,{start_time},{end_time},Default,,0,0,0,,{orig}\\N{{rEng}}{trans}"
                 f.write(line + "\n")
         log(f"线程 {threading.current_thread().name} - 已写入批 {start//BATCH_SIZE + 1} 到 {ass_file}")
 
