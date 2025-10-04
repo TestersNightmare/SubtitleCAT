@@ -306,11 +306,14 @@ class SubtitleExtractorUI:
 
     def probe_subtitles(self, video_path):
         try:
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = subprocess.SW_HIDE  # 完全隐藏
             result = subprocess.run(
                 ["ffprobe", "-v", "error", "-select_streams", "s",
                  "-show_entries", "stream=index:stream_tags=language,title",
                  "-of", "default=noprint_wrappers=1", video_path],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True, startupinfo=startupinfo
             )
             lines = result.stdout.strip().splitlines()
             subs = []
@@ -562,7 +565,10 @@ class SubtitleExtractorUI:
                 ]
                 self.log(f"[{idx}] {' '.join(cmd)}")
                 try:
-                    subprocess.run(cmd, check=True)
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    startupinfo.wShowWindow = subprocess.SW_HIDE
+                    subprocess.run(cmd, check=True, startupinfo=startupinfo)
                 except subprocess.CalledProcessError as e:
                     self.log(f"❌ 提取失败: {f} ({subtitle_lang})，错误: {e}")
 
